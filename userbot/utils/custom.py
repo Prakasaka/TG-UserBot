@@ -28,6 +28,11 @@ from telethon.tl import custom, functions, types
 
 LOGGER = logging.getLogger(__name__)
 MAXLIM: int = 4096
+file_kwargs = (
+    'file', 'caption', 'force_document', 'clear_draft', 'progress_callback',
+    'reply_to', 'attributes', 'thumb', 'allow_cache', 'voice_note',
+    'video_note', 'buttons', 'supports_streaming'
+)
 
 
 async def answer(
@@ -49,8 +54,7 @@ async def answer(
         parser = html
     else:
         parser = markdown
-
-    if len(args) == 1 and isinstance(args[0], str):
+    if not any([k for k in file_kwargs if kwargs.get(k, False)]):
         is_reply = reply or kwargs.get('reply_to', False)
         text = args[0]
         msg, msg_entities = parser.parse(text)
@@ -122,7 +126,9 @@ async def answer(
         kwargs.setdefault('reply_to', reply_to)
         try:
             kwargs.setdefault('silent', True)
-            message_out = await self.respond(*args, **kwargs)
+            message_out = await self.client.send_file(
+                self.chat_id, *args, **kwargs
+            )
         except Exception as e:
             raise e
 
@@ -132,7 +138,11 @@ async def answer(
                 message.date = start_date
         else:
             message_out.date = start_date
-    if self_destruct:
+
+    if (
+        self_destruct and
+        self.client.config['userbot'].getboolean('self_destruct_msg', True)
+    ):
         asyncio.create_task(_self_destructor(message_out, self_destruct))
 
     if log:
@@ -219,9 +229,9 @@ async def _resolve_entities(message: str, entities: list) -> dict:
             if end > 3 and not message[last_end:].startswith('\n'):
                 for e in entities[:end:-1]:
                     start = e.offset + e.length
-                    end = end - 1
                     if end == 2 or message[start:].startswith('\n'):
                         break
+                    end = end - 1
         e_chunk = entities[:end]
         next_offset, last_chunk = await _next_offset(end, entities)
         if last_chunk:

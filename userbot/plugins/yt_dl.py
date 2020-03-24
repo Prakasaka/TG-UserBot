@@ -80,11 +80,12 @@ success = "`Successfully downloaded` {}"
 
 @client.onMessage(
     command="ytdl",
-    outgoing=True, regex=r"ytdl(?: |$)([\s\S]*)"
+    outgoing=True, regex=r"ytdl(?: |$|\n)([\s\S]*)"
 )
 async def yt_dl(event):
     """Download videos from YouTube with their url in multiple formats."""
     match = event.matches[0].group(1)
+    force_document = True
     if not match:
         await event.answer(
             "`.ytdl <url>` or `.ytdl <url1> .. <urln> format=<fmt>`"
@@ -93,10 +94,17 @@ async def yt_dl(event):
 
     args, kwargs = await client.parse_arguments(match)
     fmt = kwargs.get('format', kwargs.get('fmt', False))
+    auto_delete = kwargs.get('delete', False)
+    upload = kwargs.get('upload', True)
     round_message = kwargs.get('round_message', kwargs.get('round', False))
     supports_streaming = kwargs.get(
         'supports_streaming', kwargs.get('stream', False)
     )
+    if not upload and auto_delete:
+        await event.answer(
+            "`The void doesn't make sense! Either don't upload or delete.`"
+        )
+        return
     ffmpeg = await is_ffmpeg_there()
     params = copy.deepcopy(ydl_opts)
     warnings = []
@@ -112,8 +120,12 @@ async def yt_dl(event):
                 )
                 if isinstance(info, dict):
                     fmts.append(await list_formats(info))
-                else:
+                elif isinstance(info, str):
                     warnings.append(info)
+                else:
+                    warning.append(
+                        f'```{await client.get_traceback(info)}```'
+                    )
             if fmts:
                 text = "**Formats:**\n"
                 text += ",\n\n".join(f"```{f}```" for f in fmts)
@@ -162,39 +174,52 @@ async def yt_dl(event):
         if isinstance(output, str):
             result = warning + output if not ffmpeg else output
             warnings.append(result)
+        elif isinstance(output, BaseException):
+            warning.append(f'```{await client.get_traceback(output)}```')
         else:
-            path, thumb, info = output
-            title = info.get('title', info.get('id', 'Unknown title'))
-            url = info.get('webpage_url', None)
-            href = f"[{title}]({url})"
-            text = success.format(href)
-            result = warning + text if not ffmpeg else text
+            if upload:
+                path, thumb, info = output
+                title = info.get('title', info.get('id', 'Unknown title'))
+                url = info.get('webpage_url', None)
+                href = f"[{title}]({url})"
+                text = success.format(href)
+                result = warning + text if not ffmpeg else text
 
-            dl = io.open(path, 'rb')
-            progress_cb.filen = title
-            uploaded = await client.fast_upload_file(
-                dl, progress_cb.up_progress
-            )
-            dl.close()
+                dl = io.open(path, 'rb')
+                progress_cb.filen = title
+                uploaded = await client.fast_upload_file(
+                    dl, progress_cb.up_progress
+                )
+                dl.close()
 
-            attributes, mime_type = await fix_attributes(
-                path, info, round_message, supports_streaming
-            )
-            media = types.InputMediaUploadedDocument(
-                file=uploaded,
-                mime_type=mime_type,
-                attributes=attributes,
-                thumb=await client.upload_file(thumb) if thumb else None
-            )
+                attributes, mime_type = await fix_attributes(
+                    path, info, round_message, supports_streaming
+                )
+                media = types.InputMediaUploadedDocument(
+                    file=uploaded,
+                    mime_type=mime_type,
+                    attributes=attributes,
+                    thumb=await client.upload_file(thumb) if thumb else None
+                )
 
-            await client.send_file(
-                event.chat_id, media, caption=href, force_document=True
-            )
-            if thumb:
-                os.remove(thumb)
+                if supports_streaming and path.suffix == '.mp4':
+                    force_document = False
+                if round_message:
+                    force_document = False
+                await client.send_file(
+                    event.chat_id, media,
+                    caption=href, force_document=force_document
+                )
+                if thumb:
+                    os.remove(thumb)
+                if auto_delete:
+                    os.remove(path)
+            else:
+                if thumb:
+                    os.remove(thumb)
     if warnings:
         text = "**Warnings:**\n"
-        text += ",\n\n".join(f"```{w}```" for w in warnings)
+        text += ",\n\n".join(warnings)
         await event.answer(text)
     else:
         await event.delete()

@@ -25,64 +25,60 @@ from telethon.utils import get_display_name, resolve_invite_link
 
 from userbot import client, LOGGER
 from userbot.utils.events import NewMessage
-from userbot.utils.sessions import RedisSession
 from userbot.plugins.plugins_data import Blacklist, GlobalBlacklist
 
 
 plugin_category = "blacklisting"
-if isinstance(client.session, RedisSession):
-    redis = client.session.redis_connection
-else:
-    redis = None
+redis = client.database
 
 blacklisted_text = (
-    "**This user has already been blacklisted! Automatically banned.**"
+    "**Automatically banned** {} **because they're{}blacklisted!.**"
 )
-bio_text = "**Banned due to blacklisted bio match: {}**"
-str_text = "**Banned due to blacklisted string match: {}**"
-url_str = "**Banned due to blacklisted url match: {}**"
-id_str = "**Banned due to blacklisted id match: {}**"
+bio_text = "{} **has been banned due to a{}blacklisted bio match.**"
+str_text = "{} **has been banned due to a{}blacklisted string match.**"
+url_str = "{} **has been banned due to a{}blacklisted URL match.**"
+id_str = "{} **has been banned due to a{}blacklisted ID match.**"
 
 bl_pattern = (
     r"(?P<global>g(?:lobal)?)?"
     r"b(?:lack)?l(?:ist)?"
-    r"(?: |$)(?P<match>[\s\S]*)"
+    r"(?: |$|\n)(?P<match>[\s\S]*)"
 )
 dbl_pattern = (
     r"r(?:e)?m(?:ove)?"
     r"(?P<global>g(?:lobal)?)?"
     r"b(?:lack)?l(?:ist)?"
-    r"(?: |$)(?P<match>[\s\S]*)"
+    r"(?: |$|\n)(?P<match>[\s\S]*)"
 )
 wl_pattern = (
     r"w(?:hite)?l(?:ist)?"
-    r"(?: |$)(?P<match>[\s\S]*)"
+    r"(?: |$|\n)(?P<match>[\s\S]*)"
 )
 dwl_pattern = (
     r"r(?:e)?m(?:ove)?"
     r"w(?:hite)?l(?:ist)?"
-    r"(?: |$)(?P<match>[\s\S]*)"
+    r"(?: |$|\n)(?P<match>[\s\S]*)"
 )
 dbld_pattern = (
     r"(?:remove|un)"
     r"b(?:lack)?l(?:ist)?"
-    r"(?: |$)(?P<match>[\s\S]*)"
+    r"(?: |$|\n)(?P<match>[\s\S]*)"
 )
 bls_pattern = (
     r"(?P<global>g(?:lobal)?)?"
     r"b(?:lack)?l(?:ist)?s"
-    r"(?: |$)"
-    r"(?:(?P<option>\w+))?"
+    r"(?: |$|\n)"
+    r"(?:(?P<match>[\s\S]*))?"
 )
 wls_pattern = (
     r"w(?:hite)?l(?:ist)?s"
-    r"(?: |$)"
-    r"(?:(?P<option>\w+))?"
+    r"(?: |$|\n)"
+    r"(?:(?P<match>[\s\S]*))?"
 )
 bld_pattern = (
     r"blacklisted"
-    r"(?: |$)"
-    r"(?:(?P<option>\w+))?"
+    r"(?: |$|\n)"
+    r"(?:(?P<match>[\s\S]*))?"
 )
 id_pattern = re.compile(
     r'(?:https?:\/\/)?(?:www\.)?(?:t\.me\/)?@?(?P<e>\w{5,35}|-?\d{6,16})\/?'
@@ -270,7 +266,9 @@ async def blacklister(event: NewMessage.Event) -> None:
         )
         return
 
-    parsed = await get_values(match)
+    args, kwargs = await client.parse_arguments(match)
+    parsed = await get_values(args, kwargs)
+    reason = kwargs.get('reason', False)
 
     if not glb:
         chat = await event.get_chat()
@@ -292,6 +290,8 @@ async def blacklister(event: NewMessage.Event) -> None:
     if added_values:
         text = f"**New blacklists for {key}:**\n"
         text += await values_to_str(added_values)
+        if reason:
+            text += f"\n`Reason:` `{reason}`"
         await event.answer(text, log=('blacklist', text))
     if skipped_values:
         text = f"**Skipped blacklists for {key}:**\n"
@@ -324,7 +324,9 @@ async def unblacklister(event: NewMessage.Event) -> None:
         )
         return
 
-    parsed = await get_values(match)
+    args, kwargs = await client.parse_arguments(match)
+    parsed = await get_values(args, kwargs)
+    reason = kwargs.get('reason', None)
 
     for option, values in parsed.items():
         if values:
@@ -339,6 +341,8 @@ async def unblacklister(event: NewMessage.Event) -> None:
     if removed_values:
         text = f"**Removed blacklists for {key}:**\n"
         text += await values_to_str(removed_values)
+        if reason:
+            text += f"\n`Reason:` `{reason}`"
         await event.answer(text, log=('blacklist', text))
     if skipped_values:
         text = f"**Skipped blacklists for {key}:**\n"
@@ -533,72 +537,6 @@ async def unwhitelister(event: NewMessage.Event) -> None:
 
 
 @client.onMessage(
-    command=("blacklists", plugin_category),
-    outgoing=True, regex=bls_pattern
-)
-async def listbls(event: NewMessage.Event) -> None:
-    """Get a list of all the (global) blacklists"""
-    if not redis:
-        await event.answer(
-            "`You need to use a Redis session to use blacklists.`"
-        )
-        return
-
-    glb = event.matches[0].group('global')
-    option = event.matches[0].group('option') or None
-
-    if option and option not in acceptable_options:
-        await event.answer(
-            "`Invalid argument. Available options:`\n"
-            "__id, bio, string/str, domain/url__"
-        )
-        return
-
-    if glb:
-        attrs = ['txt', 'bio', 'url', 'tgid']
-        empty = True
-        for a in attrs:
-            attr = getattr(GlobalBlacklist, a)
-            if attr:
-                empty = False
-        if empty:
-            await event.answer("__There are no global blacklists.__")
-            return
-        if option:
-            attr = getattr(GlobalBlacklist, option, None)
-            if attr:
-                values = ', '.join(attr)
-                text = f"**GLobal {option} blacklists:**\n```{values}```"
-            else:
-                text = f"__There are no global {option} blacklists.__"
-        else:
-            gbls = await blattributes(GlobalBlacklist)
-            if gbls:
-                text = f"**Global blacklists:**\n{gbls}"
-            else:
-                text = f"__There are no global blacklists.__"
-    else:
-        if event.chat_id not in localBlacklists:
-            await event.answer('__There are no blacklists set here.__')
-            return
-        if option:
-            attr = getattr(localBlacklists[event.chat_id], option, None)
-            if attr:
-                values = ', '.join(attr)
-                text = f"**{option.title()} blacklists:**\n```{values}```"
-            else:
-                text = f"__There are no {option} blacklists.__"
-        else:
-            bls = await blattributes(localBlacklists[event.chat_id])
-            if bls:
-                text = f"**Blacklists:**\n{bls}"
-            else:
-                text = f"__There are no blacklists.__"
-
-    await event.answer(text)
-
-
-@client.onMessage(
     command=("unblacklist", plugin_category),
     outgoing=True, regex=dbld_pattern
 )
@@ -626,7 +564,7 @@ async def unblacklistuser(event: NewMessage.Event) -> None:
                     if not entity.is_self:
                         users.append(entity.id)
                 else:
-                    skipped.append(f"`{entity.id}`")
+                    skipped.append(f"`{user}`")
             except Exception:
                 skipped.append(f"`{user}`")
     else:
@@ -659,23 +597,116 @@ async def unblacklistuser(event: NewMessage.Event) -> None:
 
 
 @client.onMessage(
-    command=("whitelists", plugin_category),
-    outgoing=True, regex=wls_pattern
+    command=("blacklists", plugin_category),
+    outgoing=True, regex=bls_pattern
 )
-async def listwls(event: NewMessage.Event) -> None:
-    """Get a list of all the (global) whitelists"""
+async def listbls(event: NewMessage.Event) -> None:
+    """Get a list of all the (global) blacklists"""
     if not redis:
         await event.answer(
             "`You need to use a Redis session to use blacklists.`"
         )
         return
 
-    option = event.matches[0].group('option') or None
+    glb = event.matches[0].group('global')
+    match = event.matches[0].group('match') or ''
+    args, kwargs = await client.parse_arguments(match)
+    parsed = await get_values(None, kwargs)
+
+    if match:
+        blacklisted = []
+        not_blacklisted = []
+        for option, values in parsed.items():
+            if values:
+                if glb:
+                    attr = getattr(GlobalBlacklist, option, None)
+                    if attr:
+                        for v in values:
+                            if v in attr:
+                                blacklisted.append(v)
+                            else:
+                                not_blacklisted.append(v)
+                else:
+                    if event.chat_id not in localBlacklists:
+                        break
+                    attr = getattr(
+                        localBlacklists[event.chat_id], option, None
+                    )
+                    if attr:
+                        for v in values:
+                            if v in attr:
+                                blacklisted.append(v)
+                            else:
+                                not_blacklisted.append(v)
+        if blacklisted:
+            text = "**Already blacklisted values:**\n"
+            text += ', '.join(f'`{b}`' for b in blacklisted)
+            await event.answer(text, reply=True)
+        if not_blacklisted:
+            text = "**Not blacklisted values:**\n"
+            text += ', '.join(f'`{b}`' for b in not_blacklisted)
+            await event.answer(text, reply=True)
+        if args and len(args) == 1:
+            text = None
+            arg = args[0].lower()
+            if glb:
+                attr = getattr(GlobalBlacklist, arg, None)
+                if attr:
+                    values = ', '.join(attr)
+                    text = f"**GLobal {arg} blacklists:**\n```{values}```"
+                else:
+                    text = f"__There are no global {arg} blacklists.__"
+            else:
+                attr = getattr(localBlacklists[event.chat_id], option, None)
+                if attr:
+                    values = ', '.join(attr)
+                    text = f"**{arg.title()} blacklists:**\n```{values}```"
+                else:
+                    text = f"__There are no {arg} blacklists.__"
+            if text:
+                await event.answer(text)
+    else:
+        if glb:
+            gbls = await blattributes(GlobalBlacklist)
+            if gbls:
+                text = f"**Global blacklists:**\n{gbls}"
+            else:
+                text = f"__There are no global blacklists.__"
+        else:
+            if event.chat_id not in localBlacklists:
+                await event.answer('__There are no blacklists set here.__')
+                return
+            bls = await blattributes(localBlacklists[event.chat_id])
+            if bls:
+                text = f"**Blacklists:**\n{bls}"
+            else:
+                text = f"__There are no blacklists.__"
+        await event.answer(text)
+
+
+@client.onMessage(
+    command=("whitelists", plugin_category),
+    outgoing=True, regex=wls_pattern
+)
+async def listwls(event: NewMessage.Event) -> None:
+    """Get a list of all the whitelists"""
+    if not redis:
+        await event.answer(
+            "`You need to use a Redis session to use blacklists.`"
+        )
+        return
+
+    match = event.matches[0].group('match') or ''
+    args, kwargs = await client.parse_arguments(match)
+    option = args[0] if args else None
+    user = kwargs.get('user', None)
+    chat = kwargs.get('chat', None)
 
     if option and option.lower() not in ['users', 'chats', 'user', 'chat']:
         await event.answer(
             "`Invalid argument. Available options:`\n"
-            "__user(s) or chat(s)__"
+            "__user(s) or chat(s)__\n"
+            "ex: `.wls user=<123>` or `.wls chat=<456>`"
         )
         return
 
@@ -695,17 +726,45 @@ async def listwls(event: NewMessage.Event) -> None:
     else:
         if not whitelistedChats and not whitelistedUsers:
             text = "__There are no whitelisted users or chats.__"
+            await event.answer(text)
+            return
+        if user or chat:
+            text = ''
+            if user:
+                if isinstance(user, str):
+                    user = await get_peer_id(user)
+                elif isinstance(user, list):
+                    user = user[0]
+                    if isinstance(user, str):
+                        user = await get_peer_id(user)
+                if user in whitelistedUsers:
+                    text += f"`{user} is already whitelisted!`"
+                else:
+                    text += f"`{user} is not whitelisted!`"
+            if chat:
+                if isinstance(chat, str):
+                    user = await get_peer_id(chat)
+                elif isinstance(chat, list):
+                    chat = chat[0]
+                    if isinstance(chat, str):
+                        chat = await get_peer_id(chat)
+                if text:
+                    text += "\n\n"
+                if chat in whitelistedChats:
+                    text += f"`{chat} is already whitelisted!`"
+                else:
+                    text += f"`{chat} is not whitelisted!`"
+            await event.answer(text)
         else:
             text = ""
-
-        if whitelistedUsers:
-            text += "**Whitelisted users:**\n"
-            text += ', '.join([f'`{x}`' for x in whitelistedUsers])
-        if whitelistedChats:
-            text += "\n**Whitelisted chats:**\n"
-            text += ', '.join([f'`{x}`' for x in whitelistedChats])
-
-    await event.answer(text)
+            if whitelistedUsers:
+                text += "**Whitelisted users:**\n"
+                text += ', '.join([f'`{x}`' for x in whitelistedUsers])
+            if whitelistedChats:
+                text += "\n**Whitelisted chats:**\n"
+                text += ', '.join([f'`{x}`' for x in whitelistedChats])
+            if text:
+                await event.answer(text)
 
 
 @client.onMessage(
@@ -720,7 +779,11 @@ async def listbld(event: NewMessage.Event) -> None:
         )
         return
 
-    option = event.matches[0].group('option') or None
+    match = event.matches[0].group('match') or ''
+    users = []
+    skipped = []
+    args, _ = await client.parse_arguments(match)
+    option = args[0] if len(args) == 1 and isinstance(args[0], str) else None
 
     if option and option.lower() not in ['txt', 'tgid', 'url']:
         await event.answer(
@@ -740,20 +803,50 @@ async def listbld(event: NewMessage.Event) -> None:
         if matches:
             text = "**Blacklisted users:**\n"
             text += ',\n'.join([
-                f'`{x}: {y}' for x, y in blacklistedUsers.items()
+                f'[{user}](tg://user?id={user}): `{x}`, `{y}`'
+                for x, y in blacklistedUsers.items()
             ])
         else:
             text = f"__There are no {option} blacklisted users.__"
+    elif args and blacklistedUsers:
+        text = "**Blacklisted users:**\n"
+        for user in args:
+            if user in blacklistedUsers:
+                t, v = blacklistedUsers[user]
+                users.append(
+                    f'[{user}](tg://user?id={user}): `{t}`, `{v}`'
+                )
+                continue
+            try:
+                entity = await client.get_entity(user)
+                if isinstance(entity, types.User):
+                    if not entity.is_self:
+                        if user in blacklistedUsers:
+                            t, v = blacklistedUsers[entity.id]
+                            users.append(
+                                f'[{user}](tg://user?id={user}): `{t}`, `{v}`'
+                            )
+                        else:
+                            skipped.append(f"`{entity.id}`")
+                else:
+                    skipped.append(f"`{entity.id}`")
+            except Exception:
+                skipped.append(f"`{user}`")
+        text += ',\n'.join(users)
     else:
         if not blacklistedUsers:
             text = "__There are no blacklisted users.__"
         else:
-            text = ""
+            text = "**Blacklisted users:**\n"
+            text += ', '.join([
+                f'[{user}](tg://user?id={x})' for x in blacklistedUsers
+            ])
 
-        if blacklistedUsers:
-            text += "**Blacklisted users:**\n"
-            text += ', '.join([f'`{x}`' for x in blacklistedUsers])
     await event.answer(text)
+    if skipped:
+        text = "**Skipped users:**\n"
+        text += ', '.join(skipped)
+        await event.answer(text, reply=True)
 
 
 @client.onMessage(incoming=True)
@@ -775,8 +868,6 @@ async def inc_listener(event: NewMessage.Event) -> None:
 
     invite = False
     invite_match = invite_pattern.search(event.text)
-    text = False
-    match = None
     tgid_check = False
     localbl = localBlacklists.get(event.chat_id, False)
 
@@ -791,47 +882,44 @@ async def inc_listener(event: NewMessage.Event) -> None:
         for value in GlobalBlacklist.txt:
             string = await escape_string(value)
             if re.search(string, event.text, flags=re.I):
-                text = str_text.format(value)
-                match = value
+                if await ban_user(event, str_text, 'txt', value, True):
+                    return
                 break
     elif localbl and getattr(localbl, 'txt', False):
         for value in localBlacklists[event.chat_id].txt:
             string = await escape_string(value)
             if re.search(string, event.text, flags=re.I):
-                text = str_text.format(value)
-                match = value
+                if await ban_user(event, str_text, 'txt', value):
+                    return
                 break
-    if text and await ban_user(event, text, 'txt', match):
-        return
 
     if GlobalBlacklist.url:
         for value in GlobalBlacklist.url:
             string = re.sub(r'(?<!\\)\*', r'\\w+', value, count=0)
             if re.search(string, event.text, flags=re.I):
-                text = url_str.format(value)
-                match = value
+                if await ban_user(event, url_str, 'url', value, True):
+                    return
                 break
     elif localbl and getattr(localbl, 'url', False):
         for value in localBlacklists[event.chat_id].url:
             string = re.sub(r'(?<!\\)\*', r'\\w+', value, count=0)
             if re.search(string, event.text, flags=re.I):
-                text = url_str.format(value)
-                match = value
+                if await ban_user(event, url_str, 'url', value):
+                    return
                 break
-    if text and await ban_user(event, text, 'url', match):
-        return
 
     if GlobalBlacklist.tgid or (localbl and hasattr(localbl, 'tgid')):
         tgid_check = True
 
     if tgid_check:
-        if (
-            event.sender_id in getattr(GlobalBlacklist, 'tgid', []) +
-            getattr(localbl, 'tgid', [])
-        ):
-            text = id_str.format(event.sender_id)
-            match = event.sender_id
-            pass
+        globalid = getattr(GlobalBlacklist, 'tgid', []) or []
+        localid = getattr(localbl, 'tgid', []) or []
+        if event.sender_id in globalid:
+            if await ban_user(event, id_str, 'tgid', value.sender_id, True):
+                return
+        elif event.sender_id in localid:
+            if await ban_user(event, id_str, 'tgid', value.sender_id):
+                return
         entities = getattr(event, 'entities', None) or []
         for entity in entities:
             if (
@@ -842,7 +930,8 @@ async def inc_listener(event: NewMessage.Event) -> None:
             ):
                 entity = id_pattern.search(
                     event.text[entity.offset:entity.offset+entity.length]
-                ).group('e')
+                )
+                entity = entity.group('e') if entity else entity
                 value = await client.get_peer_id(entity) if entity else 0
             elif isinstance(entity, types.MessageEntityMentionName):
                 value = await client.get_peer_id(entity.user_id)
@@ -852,21 +941,19 @@ async def inc_listener(event: NewMessage.Event) -> None:
             if value and invite:
                 temp = await client.get_peer_id(value, False)
                 if invite == temp:
-                    text = id_str.format(value)
-                    match = value
+                    if await ban_user(event, id_str, 'tgid', value):
+                        return
                     break
 
-            if GlobalBlacklist.tgid and value in GlobalBlacklist.tgid:
-                text = id_str.format(value)
-                match = value
+            if value in globalid:
+                if await ban_user(event, id_str, 'tgid', value, True):
+                    return
                 break
             elif localbl and hasattr(localbl, 'tgid'):
                 if value in localBlacklists[event.chat_id].tgid:
-                    text = id_str.format(value)
-                    match = value
+                    if await ban_user(event, id_str, 'tgid', value):
+                        return
                     break
-    if text:
-        await ban_user(event, text, 'tgid', match)
 
 
 @client.on(ChatAction)
@@ -897,12 +984,12 @@ async def bio_filter(event: ChatAction.Event) -> None:
             if sender_id not in temp_banlist:
                 await ban_user(event, blacklisted_text)
             return
-        elif (
-            (GlobalBlacklist.tgid and sender_id in GlobalBlacklist.tgid) or
-            (localbl and localbl.tgid and sender_id in localbl.tgid)
-        ):
-            await ban_user(event, id_str.format(sender_id), 'bio', match)
-            return
+        elif GlobalBlacklist.tgid and sender_id in GlobalBlacklist.tgid:
+            if await ban_user(event, id_str, 'bio', match, True):
+                return
+        elif localbl and localbl.tgid and sender_id in localbl.tgid:
+            if await ban_user(event, id_str, 'bio', match):
+                return
 
         user = await client(functions.users.GetFullUserRequest(id=sender))
         if GlobalBlacklist.bio:
@@ -947,7 +1034,7 @@ async def is_admin(chat_id, sender_id) -> bool:
 
 async def ban_user(
     event: NewMessage.Event or ChatAction.Event, text: str,
-    bl_type: str = None, match: Union[str, int] = None
+    bl_type: str = None, match: Union[str, int] = None, globally: bool = False
 ) -> bool:
     if isinstance(event, NewMessage.Event):
         sender = await event.get_input_sender()
@@ -959,6 +1046,7 @@ async def ban_user(
     delete_messages = getattr(chat.admin_rights, 'delete_messages', False)
     if not (ban_right or chat.creator):
         return False
+    user_href = "[{0}](tg://user?id={0})".format(sender.user_id)
     try:
         await client.edit_permissions(
             entity=chat.id,
@@ -967,22 +1055,33 @@ async def ban_user(
         )
         if delete_messages:
             await event.delete()
+        text = text.format(user_href, ' globally ' if globally else ' ')
         await event.respond(text)
         if client.logger:
             logger_group = client.config['userbot'].getint(
                 'logger_group_id', 'me'
             )
+            if chat.username:
+                chat_href = (
+                    f"[{chat.title}]"
+                    f"(tg://resolve?domain={chat.username})"
+                )
+            else:
+                chat_href = f"[{chat.title}] `{chat.id}`"
             log_text = (
                 "**USERBOT LOG** #blacklist\n"
-                f"Banned {sender.user_id} from {chat.id}.\n{text}."
+                f"Banned {user_href} from {chat_href}.\n"
             )
+            if bl_type and match:
+                log_text += f"Blacklist type: `{bl_type}`.\nMatch: `{match}`"
             await client.send_message(logger_group, log_text)
-        if bl_type and match:
+        if bl_type and match and sender.user_id not in blacklistedUsers:
             blacklistedUsers.update({sender.user_id: (bl_type, match)})
             redis.set('blacklist:users', dill.dumps(blacklistedUsers))
         return True
     except Exception as e:
-        await event.respond(f"**Couldn't ban user due to {e}**")
+        exc = await client.get_traceback(e)
+        await event.respond(f"**Couldn't ban user. Exception:\n**```{exc}```")
         LOGGER.exception(e)
         return False
     finally:
@@ -997,33 +1096,37 @@ async def blattributes(blacklist) -> str:
     tgid = getattr(blacklist, 'tgid', None)
     url = getattr(blacklist, 'url', None)
     if strings:
-        text += f"\n**[String]:** {', '.join([f'`{x}`' for x in strings])}\n"
+        text += f"\n**{full_key_names['txt']}:** "
+        text += ', '.join([f'`{x}`' for x in strings])
     if bio:
-        text += f"\n**[Bio]:** {', '.join([f'`{x}`' for x in bio])}\n"
+        text += f"\n\n**{full_key_names['bio']}:** "
+        text += ', '.join([f'`{x}`' for x in bio])
     if tgid:
-        text += f"\n**[ID]:** {', '.join([f'`{x}`' for x in tgid])}\n"
+        text += f"\n\n**{full_key_names['tgid']}:** "
+        text += ', '.join([f'`{x}`' for x in tgid])
     if url:
-        text += f"\n**[URL]:** {', '.join([f'`{x}`' for x in url])}\n"
+        text += f"\n\n**{full_key_names['url']}:** "
+        text += ', '.join([f'`{x}`' for x in url])
     return text
 
 
-async def get_values(match: str) -> Dict[str, List]:
+async def get_values(args: list, kwargs: dict) -> Dict[str, List]:
     """
         Iter through the parsed arguments and
         return a list of the proper options.
     """
-    args, kwargs = await client.parse_arguments(match)
     txt: List[str] = []
     tgid: List[int] = []
     bio: List[str] = []
     url: List[str] = []
 
-    for i in args:
-        if isinstance(i, list):
-            txt += [str(o) for o in i if o not in txt]
-        else:
-            if i not in txt:
-                txt.append(str(i))
+    if args:
+        for i in args:
+            if isinstance(i, list):
+                txt += [str(o) for o in i if o not in txt]
+            else:
+                if i not in txt:
+                    txt.append(str(i))
 
     temp_id = kwargs.get('id', [])
     await append_args_to_list(tgid, temp_id, True)
@@ -1088,12 +1191,15 @@ async def get_peer_id(entity: str or int) -> int:
 
 async def values_to_str(values_dict: dict) -> str:
     text = ""
+    id_str = "[{0}](tg://user?id={0})"
     for key, values in values_dict.items():
-        key = full_key_names.get(key, key)
+        title = full_key_names.get(key, key)
         if len(text) == 0:
-            text += f"**{key}:**\n  "
+            text += f"**{title}:**\n  "
         else:
-            text += f"\n\n**{key}**\n"
-        text += ", ".join(f'`{x}`' for x in values)
-
+            text += f"\n\n**{title}**\n"
+        if key == "tgid":
+            text += ", ".join(id_str.format(x) for x in values)
+        else:
+            text += ", ".join(f'`{x}`' for x in values)
     return text
