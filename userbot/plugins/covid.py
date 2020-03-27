@@ -23,10 +23,10 @@ from userbot.utils.events import NewMessage
 
 plugin_category = "pandemic"
 covid_str = (
-    "**{country}:**  🦠 **{active}**  💀 **{deaths}**  💚 "
-    "**{recovered}**  ✅ **{confirmed}**"
+    "**{country}:**\n"
+    "✅ **{confirmed}**  🦠 **{active}**\n"
+    "💚 **{recovered}**  ⚰️ **{deaths}**"
 )
-covid_countries = "{name}: {id}"
 
 
 @client.onMessage(
@@ -35,29 +35,25 @@ covid_countries = "{name}: {id}"
 )
 async def covid19(event: NewMessage.Event) -> None:
     """Get the current covid stats for a specific country or overall."""
-    covid = Covid()
+    covid = Covid(source="worldometers")
     match = event.matches[0].group(1)
     if match:
         strings = []
         args, _ = await client.parse_arguments(match)
         if match.lower() == "countries":
-            countries = {}
-            countries_list = covid.list_countries()
-            for c in countries_list:
-                countries[c['name']] = covid_countries.format(**c)
-            strings = [y for _, y in sorted(countries.items())]
+            strings = sorted(covid.list_countries())
         else:
             for c in args:
                 try:
-                    if c.isnumeric():
-                        country = covid.get_status_by_country_id(c)
-                    else:
-                        country = covid.get_status_by_country_name(c)
-                    strings.append(covid_str.format(**country))
+                    country = covid.get_status_by_country_name(c)
+                    string = covid_str.format(**country)
+                    if country['critical']:
+                        string += f"\n⚠️  **{country['critical']}**"
+                    strings.append(string)
                 except ValueError:
                     continue
         if strings:
-            await event.answer(',\n'.join(strings))
+            await event.answer('\n\n'.join(strings))
     else:
         country = "Worldwide"
         active = covid.get_total_active_cases()
